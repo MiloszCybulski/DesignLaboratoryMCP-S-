@@ -1,0 +1,87 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+
+// Klasa reprezentująca diodę LED
+class Led {
+	private:
+	volatile uint8_t* port;
+	uint8_t pin;
+	public:
+	Led(volatile uint8_t* port_, uint8_t pin_) : port(port_), pin(pin_) {}
+	void on()    { *port |=  (1 << pin); }
+	void off()   { *port &= ~(1 << pin); }
+	void toggle(){ *port ^=  (1 << pin); }
+};
+
+// Klasa reprezentująca przycisk
+class Button {
+	private:
+	volatile uint8_t* pinReg;
+	uint8_t pin;
+	uint8_t lastState;
+	public:
+	Button(volatile uint8_t* pinReg_, uint8_t pin_) : pinReg(pinReg_), pin(pin_), lastState(0xFF) {}
+	
+	bool isPressed() {
+		// aktywny stan niski
+		return !(*pinReg & (1 << pin));
+	}
+
+	bool isClicked() {
+		uint8_t current = isPressed();
+		bool clicked = (current && !lastState);
+		lastState = current;
+		return clicked;
+	}
+};
+
+int main() {
+	// Konfiguracja pinów
+	DDRB = 0b00111111;  
+	DDRC &= ~(0b00001111); 
+	PORTC |= 0b00001111;   
+
+	// Obiekty LEDów
+	Led led1(&PORTB, PB0);
+	Led led2(&PORTB, PB1);
+	Led led3(&PORTB, PB2);
+	Led led4(&PORTB, PB3);
+	Led led5(&PORTB, PB4);
+	Led led6(&PORTB, PB5);
+
+	// Obiekty przycisków
+	Button btn1(&PINC, PC0);
+	Button btn2(&PINC, PC1);
+	Button btn3(&PINC, PC2);
+	Button btn4(&PINC, PC3);
+
+	// Stany LEDów sterowanych przyciskami
+	bool led3_state = false;
+	bool led4_state = false;
+	bool led5_state = false;
+	bool led6_state = false;
+
+	while (true) {
+		// LED1 świeci zawsze
+		led1.on();
+
+		// LED2 miga
+		led2.toggle();
+		_delay_ms(300);
+
+		// Detekcja kliknięć
+		if (btn1.isClicked()) led3_state = !led3_state;
+		if (btn2.isClicked()) led4_state = !led4_state;
+		if (btn3.isClicked()) led5_state = !led5_state;
+		if (btn4.isClicked()) led6_state = !led6_state;
+
+		// Aktualizacja stanów LEDów
+		led3_state ? led3.on() : led3.off();
+		led4_state ? led4.on() : led4.off();
+		led5_state ? led5.on() : led5.off();
+		led6_state ? led6.on() : led6.off();
+	}
+}
+
+//kod do płytki z 3 zajęć Design Lab, posiadająćy płytkę przyciskową oraz LED-y
