@@ -1,0 +1,135 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+
+// ====== Definicje pinów ======
+#define MOSI PC4
+#define MISO PC5
+#define SCK  PC6
+#define SD_CS PC3   // linia CS do karty SD (zamiast PC7)
+
+// ====== Tablica dla 7-seg ======
+// 0–9 w kodzie dla wspólnej anody
+const uint8_t seg_digits[10] = {
+	0b00111111, // 0
+	0b00000110, // 1
+	0b01011011, // 2
+	0b01001111, // 3
+	0b01100110, // 4
+	0b01101101, // 5
+	0b01111101, // 6
+	0b00000111, // 7
+	0b01111111, // 8
+	0b01101111  // 9
+};
+
+// ====== Programowe SPI ======
+void spi_init()
+{
+	DDRC |= (1 << MOSI) | (1 << SCK) | (1 << SD_CS);
+	DDRC &= ~(1 << MISO);
+	PORTC |= (1 << SD_CS); // CS HIGH
+}
+
+void spi_send_bit(uint8_t bit)
+{
+	if (bit)
+		PORTC |= (1 << MOSI);
+	else
+		PORTC &= ~(1 << MOSI);
+
+	PORTC |= (1 << SCK);
+	_delay_us(1);
+	PORTC &= ~(1 << SCK);
+}
+
+uint8_t spi_transfer(uint8_t data)
+{
+	uint8_t received = 0;
+	for (uint8_t i = 0; i < 8; i++)
+	{
+		spi_send_bit(data & 0x80);
+		data <<= 1;
+
+		PORTC |= (1 << SCK);
+		if (PINC & (1 << MISO)) received |= (1 << (7 - i));
+		PORTC &= ~(1 << SCK);
+	}
+	return received;
+}
+
+// ====== Wyświetlanie cyfr ======
+void show_digit(uint8_t value)
+{
+	PORTD = ~seg_digits[value];
+}
+
+// ====== Funkcja główna ======
+int main(void)
+{
+	// LEDy – PB0–PB5 jako wyjścia
+	DDRB = 0b00111111;
+	// Przyciski – PC0–PC3 wejścia z podciąganiem
+	DDRC &= ~(0b00001111);
+	PORTC |= 0b00001111;
+
+	// 7-seg – PD0–PD7 jako wyjścia
+	DDRD = 0xFF;
+
+	spi_init();
+
+	uint8_t led3_state = 0;
+	uint8_t led4_state = 0;
+	uint8_t led5_state = 0;
+	uint8_t led6_state = 0;
+	uint8_t last_buttons = 0x0F;
+
+	uint8_t counter = 0;
+
+	while (1)
+	{
+		// LED1 świeci stale
+		PORTB |= (1 << PB0);
+
+		// LED2 miga
+		PORTB ^= (1 << PB1);
+
+		// Odczyt przycisków
+		uint8_t buttons = ~PINC & 0x0F;
+
+		for (uint8_t i = 0; i < 4; i++)
+		{
+			if ((buttons & (1 << i)) && !(last_buttons & (1 << i)))
+			{
+				switch (i)
+				{
+					case 0: led3_state ^= 1; break;
+					case 1: led4_state ^= 1; break;
+					case 2: led5_state ^= 1; break;
+					case 3: led6_state ^= 1; break;
+				}
+			}
+		}
+		last_buttons = buttons;
+
+		// Aktualizacja LEDów
+		if (led3_state) PORTB |= (1 << PB2); else PORTB &= ~(1 << PB2);
+		if (led4_state) PORTB |= (1 << PB3); else PORTB &= ~(1 << PB3);
+		if (led5_state) PORTB |= (1 << PB4); else PORTB &= ~(1 << PB4);
+		if (led6_state) PORTB |= (1 << PB5); else PORTB &= ~(1 << PB5);
+
+		// Wyświetlanie wartości na 7-seg
+		show_digit(counter % 10);
+
+		// Przykładowa komunikacja z kartą SD (CS sterowany)
+		PORTC &= ~(1 << SD_CS); // CS LOW
+		spi_transfer(0xAA);     // wysyłka testowa
+		PORTC |= (1 << SD_CS);  // CS HIGH
+
+		counter++;
+		if (counter > 9) counter = 0;
+
+		_delay_ms(300);
+	}
+}
+//próbny kod płytki LED+płytka przyciskowa+wyświetlacz 7 seg+karta sd, aktualnie kod wyświetla liczby od 0 do 9 sprawdzając działanie i połączenia wyświetlaczu 7 seg, kod do czytnika karty sd jest przykładowy, nie mam kart sd żadnych i nie mam jak tego sprawdzić czy żyje
