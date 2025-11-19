@@ -1,0 +1,122 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdint.h>
+
+const uint8_t seg_digits[10] = {
+	0b01111110,
+	0b00001100,
+	0b10110110,
+	0b10011110,
+	0b11001100,
+	0b11011010,
+	0b11111010,
+	0b00001110,
+	0b11111110,
+	0b11011110
+};
+
+static inline void seg_set_a(uint8_t on) { if(on) PORTC |= (1<<PC4); else PORTC &= ~(1<<PC4); }
+static inline void seg_set_b(uint8_t on) { if(on) PORTC |= (1<<PC5); else PORTC &= ~(1<<PC5); }
+static inline void seg_set_c(uint8_t on) { if(on) PORTD |= (1<<PD2); else PORTD &= ~(1<<PD2); }
+static inline void seg_set_d(uint8_t on) { if(on) PORTD |= (1<<PD3); else PORTD &= ~(1<<PD3); }
+static inline void seg_set_e(uint8_t on) { if(on) PORTD |= (1<<PD4); else PORTD &= ~(1<<PD4); }
+static inline void seg_set_f(uint8_t on) { if(on) PORTD |= (1<<PD5); else PORTD &= ~(1<<PD5); }
+static inline void seg_set_g(uint8_t on) { if(on) PORTD |= (1<<PD6); else PORTD &= ~(1<<PD6); }
+static inline void seg_set_dp(uint8_t on){ if(on) PORTD |= (1<<PD7); else PORTD &= ~(1<<PD7); }
+
+void show_digit(uint8_t v)
+{
+	if(v>9) v=0;
+	uint8_t pattern = seg_digits[v];
+	uint8_t a = (pattern & 0x40) ? 1 : 0;
+	uint8_t b = (pattern & 0x20) ? 1 : 0;
+	uint8_t c = (pattern & 0x10) ? 1 : 0;
+	uint8_t d = (pattern & 0x08) ? 1 : 0;
+	uint8_t e = (pattern & 0x04) ? 1 : 0;
+	uint8_t f = (pattern & 0x02) ? 1 : 0;
+	uint8_t g = (pattern & 0x01) ? 1 : 0;
+	uint8_t dp= (pattern & 0x80) ? 1 : 0;
+	seg_set_a(a); seg_set_b(b); seg_set_c(c); seg_set_d(d);
+	seg_set_e(e); seg_set_f(f); seg_set_g(g); seg_set_dp(dp);
+}
+
+void uart_init_9600(void)
+{
+	uint16_t ubrr = 103;
+	UBRR0H = (uint8_t)(ubrr >> 8);
+	UBRR0L = (uint8_t)(ubrr & 0xFF);
+	UCSR0B = (1<<RXEN0) | (1<<TXEN0);
+	UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);
+}
+
+uint8_t uart_read_blocking(void)
+{
+	while (!(UCSR0A & (1<<RXC0)));
+	return UDR0;
+}
+
+/*
+void spi_init() {}
+uint8_t spi_transfer(uint8_t d) { return 0; }
+*/
+
+int main(void)
+{
+	DDRB = 0b00111111;
+	PORTB = 0x00;
+	DDRC &= ~(0x0F);
+	PORTC |= 0x0F;
+	DDRC |= (1<<PC4) | (1<<PC5);
+	DDRD |= ( (1<<PD2)|(1<<PD3)|(1<<PD4)|(1<<PD5)|(1<<PD6)|(1<<PD7) );
+
+	uart_init_9600();
+
+	seg_set_a(0); seg_set_b(0); seg_set_c(0); seg_set_d(0);
+	seg_set_e(0); seg_set_f(0); seg_set_g(0); seg_set_dp(0);
+
+	uint8_t frame[16];
+	uint16_t humidity_raw = 0;
+	uint8_t display_digit = 0;
+	uint8_t last_buttons = 0x0F;
+
+	while (1)
+	{
+		PORTB |= (1<<PB0);
+		PORTB ^= (1<<PB1);
+
+		uint8_t buttons = ~PINC & 0x0F;
+		for (uint8_t i=0;i<4;i++){
+			if ((buttons & (1<<i)) && !(last_buttons & (1<<i))) {
+				switch(i){
+					case 0: PORTB ^= (1<<PB2); break;
+					case 1: PORTB ^= (1<<PB3); break;
+					case 2: PORTB ^= (1<<PB4); break;
+					case 3: PORTB ^= (1<<PB5); break;
+				}
+			}
+		}
+		last_buttons = buttons;
+
+		uint8_t b;
+		do { b = uart_read_blocking(); } while (b != 0xFE);
+		b = uart_read_blocking();
+		if (b != 0xFE) continue;
+
+		for (uint8_t i=0;i<6;i++){ frame[i] = uart_read_blocking(); }
+
+		uint8_t checksum = 0;
+		for (uint8_t i=0;i<5;i++) checksum += frame[i];
+		if (checksum != frame[5]) continue;
+
+		humidity_raw = ((uint16_t)frame[1] << 8) | frame[2];
+		uint16_t humidity_percent = humidity_raw;
+
+		display_digit = humidity_percent % 10;
+		show_digit(display_digit);
+
+		_delay_ms(250);
+	}
+
+	return 0;
+}
