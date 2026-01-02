@@ -1,87 +1,330 @@
 #define F_CPU 16000000UL
+
 #include <avr/io.h>
 #include <util/delay.h>
+#include <stdint.h>
+#include <stdio.h>
 
-// Klasa reprezentująca diodę LED
-class Led {
-	private:
-	volatile uint8_t* port;
-	uint8_t pin;
-	public:
-	Led(volatile uint8_t* port_, uint8_t pin_) : port(port_), pin(pin_) {}
-	void on()    { *port |=  (1 << pin); }
-	void off()   { *port &= ~(1 << pin); }
-	void toggle(){ *port ^=  (1 << pin); }
-};
+/* ============================================================
+   UART – komunikacja szeregowa
+   Inicjalizacja, wysyłanie znaków, odbiór komend z terminala
+   ============================================================ */
 
-// Klasa reprezentująca przycisk
-class Button {
-	private:
-	volatile uint8_t* pinReg;
-	uint8_t pin;
-	uint8_t lastState;
-	public:
-	Button(volatile uint8_t* pinReg_, uint8_t pin_) : pinReg(pinReg_), pin(pin_), lastState(0xFF) {}
-	
-	bool isPressed() {
-		// aktywny stan niski
-		return !(*pinReg & (1 << pin));
-	}
+void uart_init()
+{
+    // Ustawienie prędkości 9600 baud
+    UBRR0H = 0;
+    UBRR0L = 103;
 
-	bool isClicked() {
-		uint8_t current = isPressed();
-		bool clicked = (current && !lastState);
-		lastState = current;
-		return clicked;
-	}
-};
+    // Włączenie nadajnika i odbiornika
+    UCSR0B = (1<<TXEN0)|(1<<RXEN0);
 
-int main() {
-	// Konfiguracja pinów
-	DDRB = 0b00111111;  
-	DDRC &= ~(0b00001111); 
-	PORTC |= 0b00001111;   
-
-	// Obiekty LEDów
-	Led led1(&PORTB, PB0);
-	Led led2(&PORTB, PB1);
-	Led led3(&PORTB, PB2);
-	Led led4(&PORTB, PB3);
-	Led led5(&PORTB, PB4);
-	Led led6(&PORTB, PB5);
-
-	// Obiekty przycisków
-	Button btn1(&PINC, PC0);
-	Button btn2(&PINC, PC1);
-	Button btn3(&PINC, PC2);
-	Button btn4(&PINC, PC3);
-
-	// Stany LEDów sterowanych przyciskami
-	bool led3_state = false;
-	bool led4_state = false;
-	bool led5_state = false;
-	bool led6_state = false;
-
-	while (true) {
-		// LED1 świeci zawsze
-		led1.on();
-
-		// LED2 miga
-		led2.toggle();
-		_delay_ms(300);
-
-		// Detekcja kliknięć
-		if (btn1.isClicked()) led3_state = !led3_state;
-		if (btn2.isClicked()) led4_state = !led4_state;
-		if (btn3.isClicked()) led5_state = !led5_state;
-		if (btn4.isClicked()) led6_state = !led6_state;
-
-		// Aktualizacja stanów LEDów
-		led3_state ? led3.on() : led3.off();
-		led4_state ? led4.on() : led4.off();
-		led5_state ? led5.on() : led5.off();
-		led6_state ? led6.on() : led6.off();
-	}
+    // Format ramki: 8 bitów danych, 1 bit stopu
+    UCSR0C = (1<<UCSZ01)|(1<<UCSZ00);
 }
 
-//kod do płytki z 3 zajęć Design Lab, posiadająćy płytkę przyciskową oraz LED-y
+void uart_putc(char c)
+{
+    while (!(UCSR0A & (1<<UDRE0))); // czekaj aż bufor będzie pusty
+    UDR0 = c;
+}
+
+void uart_puts(const char *s)
+{
+    while (*s) uart_putc(*s++);
+}
+
+uint8_t uart_available()
+{
+    return (UCSR0A & (1<<RXC0));
+}
+
+char uart_read()
+{
+    return UDR0;
+}
+
+/* ============================================================
+   I2C (TWI) – obsługa magistrali dla czujnika BMP/QMP
+   ============================================================ */
+
+#define TWCR TWCR0
+#define TWBR TWBR0
+#define TWSR TWSR0
+#define TWDR TWDR0
+
+void i2c_init()
+{
+    TWSR = 0;     // preskaler = 1
+    TWBR = 72;    // prędkość ~100kHz
+}
+
+void i2c_start()
+{
+    TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
+    while (!(TWCR & (1<<TWINT)));
+}
+
+void i2c_stop()
+{
+    TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWSTO);
+}
+
+void i2c_write(uint8_t data)
+{
+    TWDR = data;
+    TWCR = (1<<TWINT)|(1<<TWEN);
+    while (!(TWCR & (1<<TWINT)));
+}
+
+uint8_t i2c_read_ack()
+{
+    TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWEA);
+    while (!(TWCR & (1<<TWINT)));
+    return TWDR;
+}
+
+uint8_t i2c_read_nack()
+{
+    TWCR = (1<<TWINT)|(1<<TWEN);
+    while (!(TWCR & (1<<TWINT)));
+    return TWDR;
+}
+
+/* ============================================================
+   BMP/QMP – inicjalizacja i odczyt surowych danych
+   ============================================================ */
+
+#define SENSOR_ADDR 0x76
+
+void sensor_init()
+{
+    // Rejestr kontrolny – ustawienie oversamplingu
+    i2c_start();
+    i2c_write(SENSOR_ADDR<<1);
+    i2c_write(0xF4);
+    i2c_write(0x27);
+    i2c_stop();
+
+    // Rejestr konfiguracji
+    i2c_start();
+    i2c_write(SENSOR_ADDR<<1);
+    i2c_write(0xF5);
+    i2c_write(0x00);
+    i2c_stop();
+}
+
+void sensor_read_raw(int32_t *rawT, int32_t *rawP)
+{
+    uint8_t d[6];
+
+    i2c_start();
+    i2c_write(SENSOR_ADDR<<1);
+    i2c_write(0xF7); // adres pierwszego rejestru danych
+    i2c_start();
+    i2c_write((SENSOR_ADDR<<1)|1);
+
+    for (uint8_t i=0;i<5;i++) d[i] = i2c_read_ack();
+    d[5] = i2c_read_nack();
+    i2c_stop();
+
+    *rawP = ((int32_t)d[0]<<12) | ((int32_t)d[1]<<4) | (d[2]>>4);
+    *rawT = ((int32_t)d[3]<<12) | ((int32_t)d[4]<<4) | (d[5]>>4);
+}
+
+/* ============================================================
+   Kalibracja BMP – przeliczenie surowych danych na °C i Pa
+   ============================================================ */
+
+float T_scale  = 0.0007801f;
+float T_offset = -394.5f;
+
+int32_t temp_times100(int32_t rawT)
+{
+    float T = rawT * T_scale + T_offset;
+    return (int32_t)(T * 100.0f);
+}
+
+float P_scale  = 0.2506f;
+float P_offset = 0.0f;
+
+int32_t press_pa(int32_t rawP)
+{
+    float P = rawP * P_scale + P_offset;
+    return (int32_t)P;
+}
+
+/* ============================================================
+   LED – prosta dioda sygnalizacyjna
+   ============================================================ */
+
+#define LED_PORT PORTC
+#define LED_DDR  DDRC
+#define LED_PIN  PC3
+
+void led_init()
+{
+    LED_DDR |= (1<<LED_PIN);
+    LED_PORT &= ~(1<<LED_PIN);
+}
+
+void led_update(uint8_t active)
+{
+    if (active) LED_PORT |= (1<<LED_PIN);
+    else LED_PORT &= ~(1<<LED_PIN);
+}
+
+/* ============================================================
+   Wyświetlacz 7‑segmentowy – wspólna katoda
+   ============================================================ */
+
+#define SEG_PORTB PORTB
+#define SEG_DDRB  DDRB
+#define SEG_PORTD PORTD
+#define SEG_DDRD  DDRD
+
+#define DIG_PORTC PORTC
+#define DIG_DDRC  DDRC
+#define DIG_PORTB PORTB
+#define DIG_DDRB  DDRB
+
+#define DIG1 PC1
+#define DIG2 PC0
+#define DIG3 PC2
+#define DIG4 PB5
+
+// Mapa segmentów – policzona pod Twój układ bitów
+const uint8_t segment_map[10] = {
+    0b00001100, // 0
+    0b10011111, // 1
+    0b01001010, // 2
+    0b00001011, // 3
+    0b10011001, // 4
+    0b00101001, // 5
+    0b00101000, // 6
+    0b10001111, // 7
+    0b00001000, // 8
+    0b00001001  // 9
+};
+
+void seg_init()
+{
+    SEG_DDRB |= 0x0F; // PB0–PB3 = e,f,g,dp
+    SEG_DDRD |= 0xF0; // PD4–PD7 = a,b,c,d
+
+    DIG_DDRC |= (1<<DIG1)|(1<<DIG2)|(1<<DIG3);
+    DIG_DDRB |= (1<<DIG4);
+
+    SEG_PORTB |= 0x0F;
+    SEG_PORTD |= 0xF0;
+
+    DIG_PORTC |= (1<<DIG1)|(1<<DIG2)|(1<<DIG3);
+    DIG_PORTB |= (1<<DIG4);
+}
+
+void seg_set_digit(uint8_t digit)
+{
+    SEG_PORTD = (SEG_PORTD & ~0xF0) | (digit & 0xF0);
+    SEG_PORTB = (SEG_PORTB & ~0x0F) | (digit & 0x0F);
+}
+
+void seg_enable(uint8_t d)
+{
+    DIG_PORTC |= (1<<DIG1)|(1<<DIG2)|(1<<DIG3);
+    DIG_PORTB |= (1<<DIG4);
+
+    if (d==1) DIG_PORTC &= ~(1<<DIG1);
+    if (d==2) DIG_PORTC &= ~(1<<DIG2);
+    if (d==3) DIG_PORTC &= ~(1<<DIG3);
+    if (d==4) DIG_PORTB &= ~(1<<DIG4);
+}
+
+void seg_show_4digits_once(int16_t value)
+{
+    uint8_t d4 = (value/1000)%10;
+    uint8_t d3 = (value/100)%10;
+    uint8_t d2 = (value/10)%10;
+    uint8_t d1 = (value/1)%10;
+
+    seg_set_digit(segment_map[d4]); seg_enable(1); _delay_ms(1);
+    seg_set_digit(segment_map[d3]); seg_enable(2); _delay_ms(1);
+    seg_set_digit(segment_map[d2]); seg_enable(3); _delay_ms(1);
+    seg_set_digit(segment_map[d1]); seg_enable(4); _delay_ms(1);
+}
+
+/* ============================================================
+   MAIN – logika programu
+   ============================================================ */
+
+int main()
+{
+    uart_init();
+    i2c_init();
+    led_init();
+    seg_init();
+    sensor_init();
+
+    uart_puts("=== SYSTEM READY ===\r\n");
+    uart_puts("Dostepne komendy:\r\n");
+    uart_puts(" t - odczyt temperatury\r\n");
+    uart_puts(" p - odczyt cisnienia\r\n");
+    uart_puts(" d - wlacz LED\r\n");
+    uart_puts(" a - wylacz LED\r\n");
+    uart_puts(" r - reset komunikatu\r\n");
+    uart_puts("====================\r\n");
+
+    int32_t rT, rP;
+
+    while (1)
+    {
+        // Obsługa komend z UART
+        if (uart_available())
+        {
+            char c = uart_read();
+
+            if (c=='t')
+            {
+                sensor_read_raw(&rT,&rP);
+                int32_t T = temp_times100(rT);
+
+                char buf[32];
+                sprintf(buf,"Temp: %ld.%02ld C\r\n",T/100,T%100);
+                uart_puts(buf);
+            }
+
+            if (c=='p')
+            {
+                sensor_read_raw(&rT,&rP);
+                int32_t P = press_pa(rP);
+
+                char buf[32];
+                sprintf(buf,"Cisnienie: %ld Pa\r\n",P);
+                uart_puts(buf);
+            }
+
+            if (c=='d')
+            {
+                led_update(1);
+                uart_puts("LED ON\r\n");
+            }
+
+            if (c=='a')
+            {
+                led_update(0);
+                uart_puts("LED OFF\r\n");
+            }
+
+            if (c=='r')
+            {
+                uart_puts("RESET OK\r\n");
+            }
+        }
+
+        // Ciągłe wyświetlanie temperatury na 7‑seg
+        sensor_read_raw(&rT,&rP);
+        int32_t T = temp_times100(rT);
+
+        seg_show_4digits_once(T);
+    }
+}
+
