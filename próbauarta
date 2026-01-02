@@ -2,121 +2,179 @@
 #include <avr/io.h>
 #include <util/delay.h>
 #include <stdint.h>
-
-const uint8_t seg_digits[10] = {
-	0b01111110,
-	0b00001100,
-	0b10110110,
-	0b10011110,
-	0b11001100,
-	0b11011010,
-	0b11111010,
-	0b00001110,
-	0b11111110,
-	0b11011110
-};
-
-static inline void seg_set_a(uint8_t on) { if(on) PORTC |= (1<<PC4); else PORTC &= ~(1<<PC4); }
-static inline void seg_set_b(uint8_t on) { if(on) PORTC |= (1<<PC5); else PORTC &= ~(1<<PC5); }
-static inline void seg_set_c(uint8_t on) { if(on) PORTD |= (1<<PD2); else PORTD &= ~(1<<PD2); }
-static inline void seg_set_d(uint8_t on) { if(on) PORTD |= (1<<PD3); else PORTD &= ~(1<<PD3); }
-static inline void seg_set_e(uint8_t on) { if(on) PORTD |= (1<<PD4); else PORTD &= ~(1<<PD4); }
-static inline void seg_set_f(uint8_t on) { if(on) PORTD |= (1<<PD5); else PORTD &= ~(1<<PD5); }
-static inline void seg_set_g(uint8_t on) { if(on) PORTD |= (1<<PD6); else PORTD &= ~(1<<PD6); }
-static inline void seg_set_dp(uint8_t on){ if(on) PORTD |= (1<<PD7); else PORTD &= ~(1<<PD7); }
-
-void show_digit(uint8_t v)
+#include <stdio.h>
+/* ==== ATmega328PB TWI FIX ==== */
+#define TWCR TWCR0
+#define TWBR TWBR0
+#define TWSR TWSR0
+#define TWDR TWDR0
+/* ================= UART ================= */
+#define BAUD 9600
+#define UBRR_VAL ((F_CPU/16/BAUD)-1)
+void uart_init(void)
 {
-	if(v>9) v=0;
-	uint8_t pattern = seg_digits[v];
-	uint8_t a = (pattern & 0x40) ? 1 : 0;
-	uint8_t b = (pattern & 0x20) ? 1 : 0;
-	uint8_t c = (pattern & 0x10) ? 1 : 0;
-	uint8_t d = (pattern & 0x08) ? 1 : 0;
-	uint8_t e = (pattern & 0x04) ? 1 : 0;
-	uint8_t f = (pattern & 0x02) ? 1 : 0;
-	uint8_t g = (pattern & 0x01) ? 1 : 0;
-	uint8_t dp= (pattern & 0x80) ? 1 : 0;
-	seg_set_a(a); seg_set_b(b); seg_set_c(c); seg_set_d(d);
-	seg_set_e(e); seg_set_f(f); seg_set_g(g); seg_set_dp(dp);
+    UBRR0H = (uint8_t)(UBRR_VAL >> 8);
+    UBRR0L = (uint8_t)UBRR_VAL;
+    UCSR0B = (1<<TXEN0)|(1<<RXEN0);
+    UCSR0C = (1<<UCSZ01)|(1<<UCSZ00);
 }
-
-void uart_init_9600(void)
+void uart_putc(char c)
 {
-	uint16_t ubrr = 103;
-	UBRR0H = (uint8_t)(ubrr >> 8);
-	UBRR0L = (uint8_t)(ubrr & 0xFF);
-	UCSR0B = (1<<RXEN0) | (1<<TXEN0);
-	UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);
+    while (!(UCSR0A & (1<<UDRE0)));
+    UDR0 = c;
 }
-
-uint8_t uart_read_blocking(void)
+void uart_puts(const char *s)
 {
-	while (!(UCSR0A & (1<<RXC0)));
-	return UDR0;
+    while (*s) uart_putc(*s++);
 }
-
-/*
-void spi_init() {}
-uint8_t spi_transfer(uint8_t d) { return 0; }
-*/
-
+char uart_getc(void)
+{
+    while (!(UCSR0A & (1<<RXC0)));
+    return UDR0;
+}
+/* ================= I2C ================= */
+void i2c_init(void)
+{
+    TWSR = 0;
+    TWBR = 72;   // ~100kHz @16MHz
+}
+void i2c_start(void)
+{
+    TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
+    while (!(TWCR & (1<<TWINT)));
+}
+void i2c_stop(void)
+{
+    TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWSTO);
+    _delay_us(10);
+}
+void i2c_write(uint8_t data)
+{
+    TWDR = data;
+    TWCR = (1<<TWINT)|(1<<TWEN);
+    while (!(TWCR & (1<<TWINT)));
+}
+uint8_t i2c_read_ack(void)
+{
+    TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWEA);
+    while (!(TWCR & (1<<TWINT)));
+    return TWDR;
+}
+uint8_t i2c_read_nack(void)
+{
+    TWCR = (1<<TWINT)|(1<<TWEN);
+    while (!(TWCR & (1<<TWINT)));
+    return TWDR;
+}
+/* ================= BMP280 ================= */
+#define BMP280_ADDR 0x76
+uint16_t dig_T1;
+int16_t dig_T2, dig_T3;
+uint16_t dig_P1;
+int16_t dig_P2, dig_P3, dig_P4, dig_P5, dig_P6, dig_P7, dig_P8, dig_P9;
+int32_t t_fine;
+void bmp280_read_calib(void)
+{
+    uint8_t d[24];
+    i2c_start();
+    i2c_write(BMP280_ADDR<<1);
+    i2c_write(0x88);
+    i2c_start();
+    i2c_write((BMP280_ADDR<<1)|1);
+    for (uint8_t i=0;i<23;i++) d[i]=i2c_read_ack();
+    d[23]=i2c_read_nack();
+    i2c_stop();
+    dig_T1 = (d[1]<<8)|d[0];
+    dig_T2 = (d[3]<<8)|d[2];
+    dig_T3 = (d[5]<<8)|d[4];
+    dig_P1 = (d[7]<<8)|d[6];
+    dig_P2 = (d[9]<<8)|d[8];
+    dig_P3 = (d[11]<<8)|d[10];
+    dig_P4 = (d[13]<<8)|d[12];
+    dig_P5 = (d[15]<<8)|d[14];
+    dig_P6 = (d[17]<<8)|d[16];
+    dig_P7 = (d[19]<<8)|d[18];
+    dig_P8 = (d[21]<<8)|d[20];
+    dig_P9 = (d[23]<<8)|d[22];
+}
+void bmp280_init(void)
+{
+    i2c_start();
+    i2c_write(BMP280_ADDR<<1);
+    i2c_write(0xF4);
+    i2c_write(0x27); // normal mode
+    i2c_stop();
+}
+void bmp280_read_raw(int32_t *temp, int32_t *press)
+{
+    uint8_t d[6];
+    i2c_start();
+    i2c_write(BMP280_ADDR<<1);
+    i2c_write(0xF7);
+    i2c_start();
+    i2c_write((BMP280_ADDR<<1)|1);
+    for(uint8_t i=0;i<5;i++) d[i]=i2c_read_ack();
+    d[5]=i2c_read_nack();
+    i2c_stop();
+    *press = (d[0]<<12)|(d[1]<<4)|(d[2]>>4);
+    *temp  = (d[3]<<12)|(d[4]<<4)|(d[5]>>4);
+}
+int32_t bmp280_comp_temp(int32_t adc_T)
+{
+    int32_t v1 = ((((adc_T>>3)-(dig_T1<<1)))*dig_T2)>>11;
+    int32_t v2 = (((((adc_T>>4)-dig_T1)*((adc_T>>4)-dig_T1))>>12)*dig_T3)>>14;
+    t_fine = v1 + v2;
+    return (t_fine*5+128)>>8;
+}
+uint32_t bmp280_comp_press(int32_t adc_P)
+{
+    int64_t v1 = t_fine - 128000;
+    int64_t v2 = v1*v1*dig_P6;
+    v2 += (v1*dig_P5)<<17;
+    v2 += ((int64_t)dig_P4)<<35;
+    v1 = ((v1*v1*dig_P3)>>8) + ((v1*dig_P2)<<12);
+    v1 = (((int64_t)1<<47)+v1)*dig_P1>>33;
+    if (v1==0) return 0;
+    int64_t p = 1048576 - adc_P;
+    p = (((p<<31)-v2)*3125)/v1;
+    v1 = (dig_P9*(p>>13)*(p>>13))>>25;
+    v2 = (dig_P8*p)>>19;
+    p = ((p+v1+v2)>>8)+(dig_P7<<4);
+    return p;
+}
+/* ================= MAIN ================= */
 int main(void)
 {
-	DDRB = 0b00111111;
-	PORTB = 0x00;
-	DDRC &= ~(0x0F);
-	PORTC |= 0x0F;
-	DDRC |= (1<<PC4) | (1<<PC5);
-	DDRD |= ( (1<<PD2)|(1<<PD3)|(1<<PD4)|(1<<PD5)|(1<<PD6)|(1<<PD7) );
-
-	uart_init_9600();
-
-	seg_set_a(0); seg_set_b(0); seg_set_c(0); seg_set_d(0);
-	seg_set_e(0); seg_set_f(0); seg_set_g(0); seg_set_dp(0);
-
-	uint8_t frame[16];
-	uint16_t humidity_raw = 0;
-	uint8_t display_digit = 0;
-	uint8_t last_buttons = 0x0F;
-
-	while (1)
-	{
-		PORTB |= (1<<PB0);
-		PORTB ^= (1<<PB1);
-
-		uint8_t buttons = ~PINC & 0x0F;
-		for (uint8_t i=0;i<4;i++){
-			if ((buttons & (1<<i)) && !(last_buttons & (1<<i))) {
-				switch(i){
-					case 0: PORTB ^= (1<<PB2); break;
-					case 1: PORTB ^= (1<<PB3); break;
-					case 2: PORTB ^= (1<<PB4); break;
-					case 3: PORTB ^= (1<<PB5); break;
-				}
-			}
-		}
-		last_buttons = buttons;
-
-		uint8_t b;
-		do { b = uart_read_blocking(); } while (b != 0xFE);
-		b = uart_read_blocking();
-		if (b != 0xFE) continue;
-
-		for (uint8_t i=0;i<6;i++){ frame[i] = uart_read_blocking(); }
-
-		uint8_t checksum = 0;
-		for (uint8_t i=0;i<5;i++) checksum += frame[i];
-		if (checksum != frame[5]) continue;
-
-		humidity_raw = ((uint16_t)frame[1] << 8) | frame[2];
-		uint16_t humidity_percent = humidity_raw;
-
-		display_digit = humidity_percent % 10;
-		show_digit(display_digit);
-
-		_delay_ms(250);
-	}
-
-	return 0;
-}
+    uart_init();
+    i2c_init();
+    _delay_ms(100);
+    uart_puts("UART + BMP280 READY\r\n");
+    uart_puts("Commands: t p a\r\n");
+    bmp280_read_calib();
+    bmp280_init();
+    char buf[64];
+    int32_t rt, rp;
+    while (1)
+    {
+        char c = uart_getc();
+        bmp280_read_raw(&rt,&rp);
+        int32_t T = bmp280_comp_temp(rt);
+        uint32_t P = bmp280_comp_press(rp);
+        switch(c)
+        {
+            case 't':
+                sprintf(buf,"TEMP: %ld.%02ld C\r\n",T/100,T%100);
+                uart_puts(buf);
+                break;
+            case 'p':
+                sprintf(buf,"PRESS: %lu Pa\r\n",P);
+                uart_puts(buf);
+                break;
+            case 'a':
+                sprintf(buf,"T=%ld.%02ld C  P=%lu Pa\r\n",T/100,T%100,P);
+                uart_puts(buf);
+                break;
+            default:
+                uart_puts("Unknown cmd (t,p,a)\r\n");
+        }
+    }
