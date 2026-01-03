@@ -10,3 +10,5 @@ Paweł Ścibek
 Sylwester Ślusarczyk
 
 Miłosz Cybulski
+
+Dokumentację końcową projektu można znaleźć pod następującym linkiem: https://docs.google.com/document/d/1e8B4XN3sytEK4NsDrXsqLLuhZmmhayYSinMeYGpmRww/edit?tab=t.0
