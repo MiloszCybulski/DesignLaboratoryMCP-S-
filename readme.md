@@ -14,7 +14,12 @@ Dokumentację końcową projektu można znaleźć pod następującym linkiem: [D
 
 Kod źródłowy do płytki AVR znajduje się w pliku `code/avr_final.c`.
 
-Aby uruchomić aplikację, należy wykonać poniższą komendę:
+Aby uruchomić aplikację, należy wykonać poniższą komendę trzeba z katalogu root projektu wykonać:
+
+``` bash
+cd code/
+```
+A nastepnie komendę: 
 
 ```bash
 python3 AVR_Interface.py
