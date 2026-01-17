@@ -4,11 +4,18 @@ Repozytorium projektu realizowanego w ramach przedmiotu **Design Laboratory (202
 Celem projektu jest zaprojektowanie i uruchomienie układu elektronicznego wraz z oprogramowaniem (m.in. obsługa wyświetlacza 7-segmentowego oraz rozszerzeń czujnikowych), a także zebranie dokumentacji technicznej.
 
 Autorzy:
+- Paweł Ścibek
+- Sylwester Ślusarczyk
+- Miłosz Cybulski
 
-Paweł Ścibek
+Dokumentację końcową projektu można znaleźć pod następującym linkiem: [Dokumentacja projektu](https://docs.google.com/document/d/1e8B4XN3sytEK4NsDrXsqLLuhZmmhayYSinMeYGpmRww/edit?tab=t.0)
 
-Sylwester Ślusarczyk
+## Instrukcje
 
-Miłosz Cybulski
+Kod źródłowy do płytki AVR znajduje się w pliku `avr_final.c`.
 
-Dokumentację końcową projektu można znaleźć pod następującym linkiem: https://docs.google.com/document/d/1e8B4XN3sytEK4NsDrXsqLLuhZmmhayYSinMeYGpmRww/edit?tab=t.0
+Aby uruchomić aplikację, należy wykonać poniższą komendę:
+
+```bash
+python3 AVR_Interface.py
+``` 
