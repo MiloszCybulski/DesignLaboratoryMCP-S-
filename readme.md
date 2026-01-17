@@ -12,7 +12,7 @@ Dokumentację końcową projektu można znaleźć pod następującym linkiem: [D
 
 ## Instrukcje
 
-Kod źródłowy do płytki AVR znajduje się w pliku `avr_final.c`.
+Kod źródłowy do płytki AVR znajduje się w pliku `code/avr_final.c`.
 
 Aby uruchomić aplikację, należy wykonać poniższą komendę:
 
