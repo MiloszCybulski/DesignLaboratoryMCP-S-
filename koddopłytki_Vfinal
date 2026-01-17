@@ -4,11 +4,20 @@
 #include <util/delay.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <avr/interrupt.h>
+
 
 /* ============================================================
    UART – Asynchronous Serial Communication
    Used for diagnostics, user commands, and sensor readout.
    ============================================================ */
+
+int32_t rT, rP;
+
+void led_update(uint8_t active);
+void uart_puts(const char *s);
+
+
 
 void uart_init()
 {
@@ -16,17 +25,67 @@ void uart_init()
     UBRR0H = 0;
     UBRR0L = 103;
 
-    // Enable transmitter and receiver
-    UCSR0B = (1<<TXEN0)|(1<<RXEN0);
+    UCSR0B = (1<<TXEN0)|(1<<RXEN0)|(1<<RXCIE0); 
 
-    // Frame format: 8 data bits, 1 stop bit
     UCSR0C = (1<<UCSZ01)|(1<<UCSZ00);
 }
 
+char uart_read()
+{
+	return UDR0;
+}
+
+static volatile uint8_t choosenTEMP = 0;
+static volatile uint8_t choosenPRESSURE = 0;
+static volatile uint8_t choosenTEMPds18b20 = 0;
+static volatile uint8_t choosenLEDON = 0;
+static volatile uint8_t choosenLEDOFF = 0;
+static volatile uint8_t choosenRESET = 0;
+
+
+ISR(USART0_RX_vect)
+{
+	char c = uart_read();
+	
+	switch(c)
+	{
+		case 't':
+		choosenTEMP = 1;
+		break;
+		case 'p':
+		choosenPRESSURE = 1;
+		break;
+		case 's':
+		choosenTEMPds18b20 = 1;
+		break;
+		case 'd':
+		choosenLEDON = 1;
+		break;
+		case 'a':
+		choosenLEDOFF = 1;
+		break;
+		case 'r':
+		choosenRESET = 1;
+		break;
+	}
+	
+}
+
+
 void uart_putc(char c)
 {
-    while (!(UCSR0A & (1<<UDRE0))); // wait for empty buffer
-    UDR0 = c;
+	uint8_t timeout = 0;
+	while (!(UCSR0A & (1<<UDRE0)) && timeout < 100) 
+	{
+		_delay_us(10);  
+		timeout++;
+	}
+	if (timeout < 100) {
+		UDR0 = c;
+	}
+	else {
+		uart_puts("UART Timeout Error\r\n");
+	}
 }
 
 void uart_puts(const char *s)
@@ -39,10 +98,6 @@ uint8_t uart_available()
     return (UCSR0A & (1<<RXC0));
 }
 
-char uart_read()
-{
-    return UDR0;
-}
 
 /* ============================================================
    I²C (TWI) – Communication with BMP/QMP Sensor
@@ -55,8 +110,8 @@ char uart_read()
 
 void i2c_init()
 {
-    TWSR = 0;     // prescaler = 1
-    TWBR = 72;    // ~100 kHz
+    TWSR = 0;     
+    TWBR = 72;   
 }
 
 void i2c_start()
@@ -358,10 +413,15 @@ void seg_show_4digits_once(int16_t value)
 int main()
 {
     uart_init();
-    i2c_init();
+	uart_puts("Starting I2C communication...\r\n");
+	i2c_init();
+	uart_puts("Sensor initialized.\r\n");
+    
     led_init();
     seg_init();
     sensor_init();
+	sei();  
+
 
     uart_puts("=== SYSTEM READY ===\r\n");
     uart_puts("Available commands:\r\n");
@@ -373,67 +433,76 @@ int main()
     uart_puts(" r - reset message\r\n");
     uart_puts("====================\r\n");
 
-    int32_t rT, rP;
 
-    while (1)
-    {
-        // UART command handling
-        if (uart_available())
-        {
-            char c = uart_read();
 
-            if (c=='t')
-            {
-                sensor_read_raw(&rT,&rP);
-                int32_t T = temp_times100(rT);
+     while (1)
+     {
+			if (choosenTEMP)
+			{
+				sensor_read_raw(&rT,&rP);
+				int32_t T = temp_times100(rT);
 
-                char buf[32];
-                sprintf(buf,"BMP Temp: %ld.%02ld C\r\n",T/100,T%100);
-                uart_puts(buf);
-            }
+				char buf[32];
+				sprintf(buf,"BMP Temp: %ld.%02ld C\r\n",T/100,T%100);
+				uart_puts(buf);
+				choosenTEMP = 0;
+			}
 
-            if (c=='p')
-            {
-                sensor_read_raw(&rT,&rP);
-                int32_t P = press_pa(rP);
+			if (choosenPRESSURE)
+			{
+				sensor_read_raw(&rT,&rP);
+				int32_t P = press_pa(rP);
 
-                char buf[32];
-                sprintf(buf,"Pressure: %ld Pa\r\n",P);
-                uart_puts(buf);
-            }
+				char buf[32];
+				sprintf(buf,"Pressure: %ld Pa\r\n",P);
+				uart_puts(buf);
+				choosenPRESSURE = 0;
+			}
 
-            if (c=='s')
-            {
-                int16_t t = ds_read_temperature();
-                char buf[32];
-                sprintf(buf,"DS18B20: %d.%02d C\r\n", t/100, abs(t%100));
-                uart_puts(buf);
-            }
+			if (choosenTEMPds18b20)
+			{
+				int16_t t = ds_read_temperature();
+				char buf[32];
+				sprintf(buf,"DS18B20: %d.%02d C\r\n", t/100, abs(t%100));
+				uart_puts(buf);
+				choosenTEMPds18b20 = 0;
+			}
 
-            if (c=='d')
-            {
-                led_update(1);
-                uart_puts("LED ON\r\n");
-            }
+			if (choosenLEDON)
+			{
+				led_update(1);
+				uart_puts("LED ON\r\n");
+				choosenLEDON = 0;
+			}
 
-            if (c=='a')
-            {
-                led_update(0);
-                uart_puts("LED OFF\r\n");
-            }
+			if (choosenLEDOFF)
+			{
+				led_update(0);
+				uart_puts("LED OFF\r\n");
+				choosenLEDOFF = 0;
+			}
 
-            if (c=='r')
-            {
-                uart_puts("RESET OK\r\n");
-            }
-        }
+			if (choosenRESET)
+			{
+				uart_puts("RESET OK\r\n");
+				uart_puts("\r\n");
+				uart_puts("=== SYSTEM READY ===\r\n");
+				uart_puts("Available commands:\r\n");
+				uart_puts(" t - read temperature (BMP/QMP)\r\n");
+				uart_puts(" p - read pressure\r\n");
+				uart_puts(" s - read temperature (DS18B20)\r\n");
+				uart_puts(" d - LED ON\r\n");
+				uart_puts(" a - LED OFF\r\n");
+				uart_puts(" r - reset message\r\n");
+				uart_puts("====================\r\n");
+				choosenRESET = 0;
+			}
+		}
 
-        // Display temperature from BMP on 7-seg
-        sensor_read_raw(&rT,&rP);
-        int32_t T = temp_times100(rT);
+		// Display temperature from BMP on 7-seg
+		sensor_read_raw(&rT,&rP);
+		int32_t T = temp_times100(rT);
 
-        seg_show_4digits_once(T);
-    }
+		seg_show_4digits_once(T);
+		_delay_ms(100);  
 }
-
-
